@@ -1,0 +1,196 @@
+<head>
+    <style>
+      .canvas-wrapper, #gl-container {
+        display: inline-block;
+        vertical-align: top;
+      }
+    
+      #scatter-gl-container {
+        border: solid 1px black;
+        position: relative;
+      }
+    
+      /* center the canvas within its wrapper */
+      /* #gl-container canvas {
+        transform: scale3d(1, -1, 1);
+      } */
+    </style>
+    </head>
+    <body>
+      <div id="main">
+        <div class="container">
+          <div id="video-container" class="canvas-wrapper">
+            <canvas id="output"></canvas>
+            <video id="video" playsinline style="
+              -webkit-transform: scaleX(-1);
+              transform: scaleX(-1);
+              visibility: hidden;
+              width: auto;
+              height: auto;
+              ">
+            </video>
+          </div>
+          <div id="gl-container"></div>
+        </div>
+      </div>
+    </body>
+    <!-- <script src="js/dat.gui.min.js"></script> -->
+    <script src="js/tf.min.js"></script>
+    <script src="js/boxutil.js"></script>
+    <script src="js/blazeface.js"></script>
+    <script src="js/face_exist.js"></script>
+    <script src="js/2dface.js"></script>
+    <script src="js/stats.min.js"></script>
+    <script src="js/dat.gui.min.js"></script>
+    <script>
+  
+      //const BLAZEFACE_MODEL_URL = 'https://tfhub.dev/tensorflow/tfjs-model/blazeface/1/default/1';
+  
+      const BLAZEFACE_GRAPHMODEL_PATH = './models/blazeface/model.json';
+  
+      const FACEMESH_GRAPHMODEL_PATH = './models/web_model_2d/model.json';
+
+      const CHECKFACE_GRAPHMODEL_PATH = './models/face_exist2/';
+  
+      async function loadFaceNodel({ maxFaces = 10, inputWidth = 128, inputHeight = 128, iouThreshold = 0.3, scoreThreshold = 0.75 } = {}) {
+          const blazefaceModel = await tf.loadGraphModel(BLAZEFACE_GRAPHMODEL_PATH);
+          const blazeface = new BlazeFace(blazefaceModel, inputWidth, inputHeight, maxFaces, iouThreshold, scoreThreshold);
+          return blazeface;
+      }
+      
+      async function loadMeshModel(maxFaces) {
+        const meshModel = await tf.loadGraphModel(FACEMESH_GRAPHMODEL_PATH);
+        const blazefaceModel = await loadFaceNodel({maxFaces: maxFaces});
+        const checkFaceModel = await FaceExist.load(CHECKFACE_GRAPHMODEL_PATH, 64, 64);
+
+        const faceMesh = new FaceMesh2D(blazefaceModel, checkFaceModel, meshModel, maxFaces);
+        return faceMesh;
+      }
+
+      function resetMaxFace(maxFaces){
+        if(faceModel){
+          faceModel.boundingBoxDetector.maxFaces = maxFaces;
+          faceModel.maxFaces = maxFaces;
+          faceModel.clearAllRegionsOfInterest();
+        }
+      }
+  
+  
+      let video = document.getElementById('video');
+  
+      video.width = 500;
+      video.height = 500;
+      let canvas = document.getElementById('output');
+  
+      let videoWidth,videoHeight;
+  
+      let webcam, faceModel, ctx, stats;
+    
+      function drawPath(ctx, points, closePath) {
+        const region = new Path2D();
+        region.moveTo(points[0][0], points[0][1]);
+        for (let i = 1; i < points.length; i++) {
+          const point = points[i];
+          region.lineTo(point[0], point[1]);
+        }
+  
+        if (closePath) {
+          region.closePath();
+        }
+        ctx.stroke(region);
+      }
+  
+      async function renderPrediction() {
+        stats.begin();
+  
+        const screenShot = await webcam.capture();
+        const predictions = await faceModel.estimateFaces(screenShot, returnTensors = false, flipHorizontal = false);
+        screenShot.dispose();
+  
+        ctx.drawImage(video, 0, 0, videoWidth, videoHeight, 0, 0, canvas.width, canvas.height);
+        
+        if (predictions.length > 0) {
+          predictions.forEach(prediction => {
+            //console.log(prediction);
+            box = prediction.box;
+            [x,y,w,h] = [box.topLeft[0], box.topLeft[1], box.bottomRight[0]-box.topLeft[0], box.bottomRight[1]-box.topLeft[1]];
+  
+            ctx.strokeRect(x, y, w, h);
+
+            const coords = prediction.scaledCoords;
+         
+            for (let i = 0; i < coords.length; i++) {
+              const x = coords[i][0];
+              const y = coords[i][1];
+
+              ctx.beginPath();
+              ctx.arc(x, y, 2 /* radius */, 0, 2 * Math.PI);
+              ctx.fill();
+            }
+ 
+          });
+  
+        }
+        stats.end();
+        requestAnimationFrame(renderPrediction);
+      };
+  
+      async function init() {
+  
+        try {
+          webcam = await tf.data.webcam(document.getElementById('video'), {
+            resizeWidth: 500,
+            resizeHeight: 500
+          });
+  
+          videoWidth = video.videoWidth;
+          videoHeight = video.videoHeight;
+  
+          canvas.width = videoWidth;
+          canvas.height = videoHeight;
+          const canvasContainer = document.querySelector('.canvas-wrapper');
+          canvasContainer.style = `width: ${videoWidth}px; height: ${videoHeight}px`;
+    
+          ctx = canvas.getContext('2d');
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.fillStyle = '#32EEDB';
+          ctx.strokeStyle = '#2194CE';
+          ctx.lineWidth = 1.0;
+  
+  
+        } catch (e) {
+          console.log(e);
+        }
+        //tf.setBackend('cpu');
+        faceModel = await loadMeshModel(state.maxFaces);
+  
+        stats = new Stats();
+        document.getElementById('video-container').appendChild(stats.dom);
+  
+        initGui();
+  
+        renderPrediction();
+  
+      }
+  
+      const state = {
+        maxFaces: 10,
+      };
+  
+      function initGui() {
+  
+        dat.GUI.TEXT_CLOSED = '关闭控制器';
+        dat.GUI.TEXT_OPEN = '打开控制器';
+        
+        var gui = new dat.GUI();
+        
+        gui.add(state, 'maxFaces', 1, 10, 1).name('Max Faces').onFinishChange(async function (v) {
+          resetMaxFace(v);
+        });
+  
+      }
+  
+      init();
+  
+    </script>

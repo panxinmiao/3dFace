@@ -1,0 +1,468 @@
+<head>
+  <style>
+    .canvas-wrapper, #gl-container {
+      display: inline-block;
+      vertical-align: top;
+    }
+  
+    #scatter-gl-container {
+      border: solid 1px black;
+      position: relative;
+    }
+  
+    /* center the canvas within its wrapper */
+    /* #gl-container canvas {
+      transform: scale3d(1, -1, 1);
+    } */
+  </style>
+  </head>
+  <body>
+    <div id="main">
+      <!-- <img src="test_face.png" id="test_img"></img> -->
+      <div class="container">
+        <div id="video-container" class="canvas-wrapper">
+          <canvas id="output"></canvas>
+          <video id="video" playsinline style="
+            -webkit-transform: scaleX(-1);
+            transform: scaleX(-1);
+            visibility: hidden;
+            width: auto;
+            height: auto;
+            ">
+          </video>
+        </div>
+        <div id="gl-container"></div>
+      </div>
+    </div>
+  </body>
+  <!-- <script src="js/dat.gui.min.js"></script> -->
+  <script src="js/tf.min.js"></script>
+  <script src="js/boxutil.js"></script>
+  <script src="js/blazeface.js"></script>
+  <script src="js/face_exist.js"></script>
+  <script src="js/3dface.js"></script>
+  <script src="js/stats.min.js"></script>
+  <script src="js/dat.gui.min.js"></script>
+  <script src="js/npy_parser.js"></script>
+
+  <script src="js/three.min.js"></script>
+  <script src="js/OrbitControls.js"></script>
+
+  <script>
+
+    const BLAZEFACE_GRAPHMODEL_PATH = './models/blazeface/';
+
+    const FACEMESH_GRAPHMODEL_PATH = './models/web_model_3d/';
+
+    const CHECKFACE_GRAPHMODEL_PATH = './models/face_exist1/';
+
+    async function loadFaceNodel({ maxFaces = 10, inputWidth = 128, inputHeight = 128, iouThreshold = 0.3, scoreThreshold = 0.75 } = {}) {
+        const blazefaceModel = await tf.loadGraphModel(BLAZEFACE_GRAPHMODEL_PATH, {fromTFHub: true});
+        const blazeface = new BlazeFace(blazefaceModel, inputWidth, inputHeight, maxFaces, iouThreshold, scoreThreshold);
+        return blazeface;
+    }
+    
+    async function loadMeshModel(maxFaces = 1) {
+      const meshModel = await tf.loadGraphModel(FACEMESH_GRAPHMODEL_PATH, {fromTFHub: true});
+
+      const checkFaceModel = await FaceExist.load(CHECKFACE_GRAPHMODEL_PATH, 32, 32);
+
+      const blazefaceModel = await loadFaceNodel({maxFaces: maxFaces});
+
+      const mean = (await loadMeshConfig('param_mean.npy')).transpose();
+      const std = (await loadMeshConfig('param_std.npy')).transpose();
+      const u = await loadMeshConfig('u.npy');
+      const w_exp = await loadMeshConfig('w_exp.npy');
+      const w_shp = await loadMeshConfig('w_shp.npy');
+      const keypoint = (await loadMeshConfig('keypoints.npy', 'int32')).squeeze();
+      
+      const meshConfig = {mean, std, u, w_exp, w_shp, keypoint};
+
+      meshConfig.reverse = true;
+
+      const faceMesh = new FaceMesh3D(blazefaceModel, checkFaceModel, meshModel, meshConfig, 5, 0.9 ,maxFaces);
+
+      //const faceMesh = FaceMesh3D.load(BLAZEFACE_GRAPHMODEL_PATH, FACEMESH_GRAPHMODEL_PATH, CHECKFACE_GRAPHMODEL_PATH, true);
+      return faceMesh;
+    }
+
+
+    async function loadMeshConfig(file, dtype="float32") {
+      const url = FACEMESH_GRAPHMODEL_PATH+'configs/'+file;
+      const { data, shape } = await loadNpy(url);
+      return tf.tensor(data, shape, dtype);
+    }
+
+    async function loadNpy(url) {
+      const response = await fetch(url);
+      const arrayBuffer = await response.arrayBuffer();
+      const { data, shape } = fromArrayBuffer(arrayBuffer);
+      return {
+        data, shape
+      };
+    }
+
+
+    let video = document.getElementById('video');
+
+    video.width = 500;
+    video.height = 500;
+    let canvas = document.getElementById('output');
+
+    let videoWidth,videoHeight;
+
+    let webcam, faceModel, ctx, stats;
+
+    let camera, scene, renderer;
+    let faceGeometry, pointsMesh, faceMesh;
+    let pointMaterial, meshMaterial;
+    let positions, colors;
+
+    let triangles;
+
+    let detectedFaces = 0;
+
+
+    function drawPath(ctx, points, closePath) {
+      const region = new Path2D();
+      region.moveTo(points[0][0], points[0][1]);
+      for (let i = 1; i < points.length; i++) {
+        const point = points[i];
+        region.lineTo(point[0], point[1]);
+      }
+
+      if (closePath) {
+        region.closePath();
+      }
+      ctx.stroke(region);
+    }
+
+    function drawBox(box, ctx, color){
+      ctx.save();
+      [x,y,w,h] = [box.topLeft[0], box.topLeft[1], box.bottomRight[0]-box.topLeft[0], box.bottomRight[1]-box.topLeft[1]];
+
+      if(color){
+        ctx.strokeStyle = color;
+      }
+
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+    }
+
+    async function renderPrediction() {
+      stats.begin();
+
+      const screenShot = await webcam.capture();
+      const predictions = await faceModel.estimateFaces(screenShot, returnTensors = false);
+      screenShot.dispose();
+
+      ctx.drawImage(video, 0, 0, videoWidth, videoHeight, 0, 0, canvas.width, canvas.height);
+      
+      
+      if (predictions.length > 0) {
+        
+        var combined = new Array();
+
+        var combinedColors = new Array();
+
+        predictions.forEach(prediction => {
+          const box = prediction.box;
+          drawBox(box, ctx, '#FF0000');
+
+          const coords = prediction.scaledCoords;
+  
+          for (let i = 0; i < coords.length; i+=20) {
+            const x = coords[i][0];
+            const y = coords[i][1];
+            ctx.beginPath();
+            ctx.arc(x, y, 1 /* radius */, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+
+          const scaledCoordsFlatten = prediction.scaledCoordsFlatten;
+
+          const colorsFlatten = prediction.colorsFlatten;
+
+          //console.log(colorsFlatten);
+
+          combined = combined.concat(scaledCoordsFlatten);
+
+          combinedColors = combinedColors.concat(colorsFlatten);
+          
+
+        });
+
+        // faceGeometry.setAttribute('position', new THREE.Float32BufferAttribute( combined, 3 ) );
+        // faceGeometry.setAttribute('color', new THREE.Float32BufferAttribute( combinedColors, 3 ) );
+
+        if(positions && colors && predictions.length == detectedFaces){
+
+          if(!state.pause){
+            positions.set ( combined );
+            positions.needsUpdate = true;
+
+            colors.set ( combinedColors );
+            colors.needsUpdate = true;
+          }
+
+
+        }else{
+          positions = new THREE.Float32BufferAttribute( combined, 3 );
+          positions.setUsage( THREE.DynamicDrawUsage );
+          faceGeometry.setAttribute('position', positions );
+          
+          colors = new THREE.Float32BufferAttribute( combinedColors, 3 );
+          colors.setUsage( THREE.DynamicDrawUsage );
+          faceGeometry.setAttribute('color', colors );
+
+          faceGeometry.computeVertexNormals();
+        }
+
+        detectedFaces = predictions.length;
+
+        if(state.center){
+          faceGeometry.center();
+        }
+
+      }
+
+
+      renderer.render( scene, camera );
+      stats.end();
+      
+      requestAnimationFrame(renderPrediction);
+    };
+
+    async function init() {
+
+      try {
+        webcam = await tf.data.webcam(document.getElementById('video'), {
+          resizeWidth: 500,
+          resizeHeight: 500
+        });
+
+        videoWidth = video.videoWidth;
+        videoHeight = video.videoHeight;
+
+        //console.log(videoWidth, videoHeight);
+
+        canvas.width = videoWidth;
+        canvas.height = videoHeight;
+        const canvasContainer = document.querySelector('.canvas-wrapper');
+        canvasContainer.style = `width: ${videoWidth}px; height: ${videoHeight}px`;
+
+        //console.log(canvas.width);
+
+        ctx = canvas.getContext('2d');
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.fillStyle = '#32EEDB';
+        ctx.strokeStyle = '#2194CE';
+        ctx.lineWidth = 1.0;
+
+
+      } catch (e) {
+        console.log(e);
+        //document.getElementById('no-webcam').style.display = 'block';
+      }
+      faceModel = await loadMeshModel();
+
+      triangles = (await loadNpy(FACEMESH_GRAPHMODEL_PATH+'configs/tri.npy')).data;
+      
+      stats = new Stats();
+      document.getElementById('video-container').appendChild(stats.dom);
+
+
+      camera = new THREE.PerspectiveCamera( 70, videoWidth / videoHeight, 0.01, 1000 );
+
+      //camera.position.x = 200;
+      
+      scene = new THREE.Scene();
+      
+
+      var ambientLight = new THREE.AmbientLight( 0x000000 );
+      scene.add( ambientLight );
+
+      var pointLight = new THREE.PointLight( 0xffffff, 1);
+      camera.add( pointLight );
+
+      // var directionalLight = new THREE.DirectionalLight( 0xffffff );
+      // directionalLight.position.set(0 , 0, 1);
+      // scene.add( directionalLight );
+
+      //var pointLightHelper = new THREE.PointLightHelper( pointLight, 1 );
+      //scene.add( pointLightHelper );
+
+      scene.add( camera );
+
+      faceGeometry = new THREE.BufferGeometry();
+
+      faceGeometry.setIndex( new THREE.Uint16BufferAttribute(triangles, 1) );
+
+      //faceGeometry.setAttribute( 'position', new THREE.Float32BufferAttribute([], 3) );
+      //faceGeometry = faceGeometry.toNonIndexed();
+
+      pointMaterial = new THREE.PointsMaterial( {
+        //color: 0x32EEDB,
+        color: state.color,
+        size: 1,
+        //blending: THREE.AdditiveBlending,
+        transparent: true,
+        vertexColors: false,
+        //sizeAttenuation: false
+			} );
+
+      pointsMesh = new THREE.Points( faceGeometry, pointMaterial );
+
+      //pointsMesh.visible = false;
+
+      scene.add( pointsMesh );
+
+      meshMaterial = new THREE.MeshPhongMaterial( {
+        //color : 0x2194CE,
+        color: state.color,
+        //side: THREE.DoubleSide,
+        //vertexColors: true,
+        wireframe: false
+      } );
+
+      //meshMaterial = new THREE.MeshPhongMaterial( { color: 0x2194CE ,side : THREE.DoubleSide,} );
+
+      faceMesh = new THREE.Mesh( faceGeometry, meshMaterial );
+      faceMesh.visible = false;
+      //faceMesh.visible = state.triangulateMesh;
+      
+      scene.add( faceMesh );
+
+    
+      //var gridHelper = new THREE.GridHelper( 500, 500 );
+      //gridHelper.position.y = - 2;
+      //scene.add( gridHelper );
+
+      var axes = new THREE.AxesHelper(500);
+
+      scene.add( axes );
+
+      renderer = new THREE.WebGLRenderer( { antialias: true } );
+      renderer.setSize( 500, 500 );
+      controls = new THREE.OrbitControls( camera, renderer.domElement );
+      document.getElementById('gl-container').appendChild( renderer.domElement );
+
+      camera.position.set(-250, -250, 330);
+      camera.rotation.set(0, 0, 0);
+
+      controls.target.set(-250, -250, -250);
+
+      controls.update();
+
+      initGui();
+
+      renderPrediction();
+
+    }
+
+    const state = {
+      maxFaces: 1,
+      //triangulateMesh: false,
+      //pointsMesh: true,
+      display: 'point',
+      vertexColor: false,
+      color: 0x32EEDB,
+      center: false,
+      pause: false
+    };
+
+    function initGui() {
+
+      dat.GUI.TEXT_CLOSED = '关闭控制器';
+      dat.GUI.TEXT_OPEN = '打开控制器';
+      
+      var gui = new dat.GUI();
+      
+      // gui.add(state, 'maxFaces', 1, 10, 1).name('Max Faces').onChange(async function (v) {
+      //   const blazefaceModel = await loadFaceNodel({maxFaces: v});
+      //   faceModel.boundingBoxDetector = blazefaceModel;
+      //   faceModel.maxFaces = v;
+      // });
+
+      gui.add(state, 'display', {point: 'point', wireframe: 'wireframe', flatShading: 'flatShading', solid: 'solid'}).name('显示').onChange(function (v) {
+        
+        switch(v){
+          case 'point':
+            pointsMesh.visible = true;
+            faceMesh.visible = false;
+            break;
+          case 'wireframe':
+            pointsMesh.visible = false;
+            faceMesh.visible = true;
+            meshMaterial.wireframe = true;
+            meshMaterial.flatShading = false;
+            meshMaterial.needsUpdate = true;
+            break;
+
+          case 'flatShading':
+            pointsMesh.visible = false;
+            faceMesh.visible = true;
+            meshMaterial.wireframe = false;
+            meshMaterial.flatShading = true;
+            meshMaterial.needsUpdate = true;
+            break;
+
+          case 'solid':
+            pointsMesh.visible = false;
+            faceMesh.visible = true;
+            meshMaterial.wireframe = false;
+            meshMaterial.flatShading = false;
+            meshMaterial.needsUpdate = true;
+            break;
+        }
+
+
+
+      });
+
+      var baseColor = gui.addColor(state, 'color').name('基础颜色').onChange(function (v) {
+        if(!state.vertexColor){
+          pointMaterial.color = meshMaterial.color = new THREE.Color(v) ;
+        }
+      });
+
+      gui.add(state, 'vertexColor').name('顶点着色').onChange(function (v) {
+
+          pointMaterial.vertexColors = v;
+          meshMaterial.vertexColors = v;
+          pointMaterial.color = v? new THREE.Color(0xFFFFFF) : new THREE.Color(state.color) ;
+          meshMaterial.color = v? new THREE.Color(0xFFFFFF) : new THREE.Color(state.color) ;
+
+          pointMaterial.needsUpdate = true;
+          meshMaterial.needsUpdate = true;
+
+          baseColor.domElement.setAttribute('disabled', 'disabled');
+          
+      });
+
+
+      gui.add(state, 'center').name('保持居中').onChange(function (v) {
+        if(v){
+          camera.position.set(0, 0, 330);
+          camera.rotation.set(0, 0, 0);
+          controls.target.set(0, 0, 0);
+
+          controls.update();
+        }else{
+          camera.position.set(-250, -250, 330);
+          camera.rotation.set(0, 0, 0);
+          controls.target.set(-250, -250, -250);
+          controls.update();
+        }
+      });
+
+      gui.add(state, 'pause').name('暂停').onChange(function (v) {
+
+      });
+
+    }
+
+    init();
+
+  </script>
