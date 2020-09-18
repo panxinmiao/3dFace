@@ -47,9 +47,9 @@
 
     const BLAZEFACE_GRAPHMODEL_PATH = './models/blazeface/';
 
-    const FACEMESH_GRAPHMODEL_PATH = './models/pfld_64_0818_nme=7.61_frozen_model/';
+    const FACEMESH_GRAPHMODEL_PATH = './models/web_model_3d/';
 
-    const CHECKFACE_GRAPHMODEL_PATH = './models/face_exist2/';
+    const CHECKFACE_GRAPHMODEL_PATH = './models/face_exist1/';
 
     async function loadFaceNodel({ maxFaces = 10, inputWidth = 128, inputHeight = 128, iouThreshold = 0.3, scoreThreshold = 0.75 } = {}) {
         const blazefaceModel = await tf.loadGraphModel(BLAZEFACE_GRAPHMODEL_PATH, {fromTFHub: true});
@@ -60,7 +60,7 @@
     async function loadMeshModel(maxFaces = 1) {
       const meshModel = await tf.loadGraphModel(FACEMESH_GRAPHMODEL_PATH, {fromTFHub: true});
 
-      const checkFaceModel = await FaceExist.load(CHECKFACE_GRAPHMODEL_PATH, 64, 64);
+      const checkFaceModel = await FaceExist.load(CHECKFACE_GRAPHMODEL_PATH, 32, 32);
 
       const blazefaceModel = await loadFaceNodel({maxFaces: maxFaces});
 
