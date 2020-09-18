@@ -4,16 +4,11 @@
       display: inline-block;
       vertical-align: top;
     }
-  
-    #scatter-gl-container {
-      border: solid 1px black;
-      position: relative;
-    }
-  
+    
     /* center the canvas within its wrapper */
-    /* #gl-container canvas {
-      transform: scale3d(1, -1, 1);
-    } */
+    #gl-container canvas {
+      transform: scale3d(-1, -1, 1);
+    }
   </style>
   </head>
   <body>
@@ -45,16 +40,16 @@
   <script src="js/dat.gui.min.js"></script>
   <script src="js/npy_parser.js"></script>
 
-  <script src="js/three.min.js"></script>
-  <script src="js/OrbitControls.js"></script>
+  <script src="threejs/three.min.js"></script>
+  <script src="threejs/js/controls/OrbitControls.js"></script>
 
   <script>
 
     const BLAZEFACE_GRAPHMODEL_PATH = './models/blazeface/';
 
-    const FACEMESH_GRAPHMODEL_PATH = './models/web_model_3d/';
+    const FACEMESH_GRAPHMODEL_PATH = './models/pfld_64_0818_nme=7.61_frozen_model/';
 
-    const CHECKFACE_GRAPHMODEL_PATH = './models/face_exist1/';
+    const CHECKFACE_GRAPHMODEL_PATH = './models/face_exist2/';
 
     async function loadFaceNodel({ maxFaces = 10, inputWidth = 128, inputHeight = 128, iouThreshold = 0.3, scoreThreshold = 0.75 } = {}) {
         const blazefaceModel = await tf.loadGraphModel(BLAZEFACE_GRAPHMODEL_PATH, {fromTFHub: true});
@@ -65,12 +60,14 @@
     async function loadMeshModel(maxFaces = 1) {
       const meshModel = await tf.loadGraphModel(FACEMESH_GRAPHMODEL_PATH, {fromTFHub: true});
 
-      const checkFaceModel = await FaceExist.load(CHECKFACE_GRAPHMODEL_PATH, 32, 32);
+      const checkFaceModel = await FaceExist.load(CHECKFACE_GRAPHMODEL_PATH, 64, 64);
 
       const blazefaceModel = await loadFaceNodel({maxFaces: maxFaces});
 
       const mean = (await loadMeshConfig('param_mean.npy')).transpose();
       const std = (await loadMeshConfig('param_std.npy')).transpose();
+      //const u_exp = await loadMeshConfig('u_exp.npy');
+      //const u_shp = await loadMeshConfig('u_shp.npy');
       const u = await loadMeshConfig('u.npy');
       const w_exp = await loadMeshConfig('w_exp.npy');
       const w_shp = await loadMeshConfig('w_shp.npy');
@@ -113,7 +110,8 @@
 
     let webcam, faceModel, ctx, stats;
 
-    let camera, scene, renderer;
+    let perspectiveCamera, orthographicCamera, scene, renderer;
+    let videoCamera, videoScene;
     let faceGeometry, pointsMesh, faceMesh;
     let pointMaterial, meshMaterial;
     let positions, colors;
@@ -153,7 +151,7 @@
       stats.begin();
 
       const screenShot = await webcam.capture();
-      const predictions = await faceModel.estimateFaces(screenShot, returnTensors = false);
+      const predictions = await faceModel.estimateFaces(screenShot, returnTensors = false, flipHorizontal = false);
       screenShot.dispose();
 
       ctx.drawImage(video, 0, 0, videoWidth, videoHeight, 0, 0, canvas.width, canvas.height);
@@ -169,9 +167,15 @@
           const box = prediction.box;
           drawBox(box, ctx, '#FF0000');
 
+          //const landmarksBox = prediction.landmarksBox;
+          //drawBox(landmarksBox, ctx);
+
+         // [x,y,w,h] = [box.topLeft[0], box.topLeft[1], box.bottomRight[0]-box.topLeft[0], box.bottomRight[1]-box.topLeft[1]];
+          // ctx.strokeRect(x, y, w, h);
+
           const coords = prediction.scaledCoords;
   
-          for (let i = 0; i < coords.length; i+=20) {
+          for (let i = 0; i < coords.length; i+=50) {
             const x = coords[i][0];
             const y = coords[i][1];
             ctx.beginPath();
@@ -197,7 +201,7 @@
 
         if(positions && colors && predictions.length == detectedFaces){
 
-          if(!state.pause){
+          if(!state.pause || state.ar){
             positions.set ( combined );
             positions.needsUpdate = true;
 
@@ -211,25 +215,35 @@
           positions.setUsage( THREE.DynamicDrawUsage );
           faceGeometry.setAttribute('position', positions );
           
+
           colors = new THREE.Float32BufferAttribute( combinedColors, 3 );
           colors.setUsage( THREE.DynamicDrawUsage );
           faceGeometry.setAttribute('color', colors );
 
           faceGeometry.computeVertexNormals();
+
         }
 
         detectedFaces = predictions.length;
 
-        if(state.center){
+        if(state.center && !state.ar){
           faceGeometry.center();
         }
 
       }
 
-
-      renderer.render( scene, camera );
-      stats.end();
+      if(state.ar){
+        var ac = renderer.autoClear;
+        renderer.autoClear = false;
+        renderer.clear();
+        renderer.render( videoScene, videoCamera );
+        renderer.render( scene, orthographicCamera );
+        renderer.autoClear = ac;
+      }else{
+        renderer.render( scene, perspectiveCamera );
+      }
       
+      stats.end();
       requestAnimationFrame(renderPrediction);
     };
 
@@ -273,9 +287,11 @@
       document.getElementById('video-container').appendChild(stats.dom);
 
 
-      camera = new THREE.PerspectiveCamera( 70, videoWidth / videoHeight, 0.01, 1000 );
-
-      //camera.position.x = 200;
+      perspectiveCamera = new THREE.PerspectiveCamera( 70, videoWidth / videoHeight, 0.01, 1000 );
+      perspectiveCamera.position.set(250, 250, 250);
+      orthographicCamera = new THREE.OrthographicCamera(-250, 250, 250, -250, -1, 1000);
+      orthographicCamera.position.set(250, 250, 250);
+      //camera.rotation.set(0, 0, 0);
       
       scene = new THREE.Scene();
       
@@ -284,18 +300,34 @@
       scene.add( ambientLight );
 
       var pointLight = new THREE.PointLight( 0xffffff, 1);
-      camera.add( pointLight );
+      //pointLight.position.set( -100, -100, -150 );
+      perspectiveCamera.add( pointLight );
+      orthographicCamera.add( pointLight );
 
-      // var directionalLight = new THREE.DirectionalLight( 0xffffff );
-      // directionalLight.position.set(0 , 0, 1);
-      // scene.add( directionalLight );
+      scene.add( perspectiveCamera );
+      scene.add( orthographicCamera );
 
-      //var pointLightHelper = new THREE.PointLightHelper( pointLight, 1 );
-      //scene.add( pointLightHelper );
+      var videoTex = new THREE.VideoTexture( video );
+      videoTex.minFilter = THREE.LinearFilter;
+      videoTex.magFilter = THREE.LinearFilter;
+      videoTex.format = THREE.RGBFormat;
 
-      scene.add( camera );
+      var plane = new THREE.Mesh(
+          new THREE.PlaneBufferGeometry(2, 2),
+          new THREE.MeshBasicMaterial({map: videoTex, side: THREE.DoubleSide})
+      );
+
+      plane.material.depthTest = false;
+      plane.material.depthWrite = false;
+
+      videoCamera = new THREE.OrthographicCamera(-1, 1, -1, 1, -1, 1);
+      videoScene = new THREE.Scene();
+      videoScene.add(plane);
+      videoScene.add(videoCamera);
 
       faceGeometry = new THREE.BufferGeometry();
+
+      //faceGeometry.setAttribute('position', new THREE.Float32BufferAttribute( [1,1,1], 3 ) );
 
       faceGeometry.setIndex( new THREE.Uint16BufferAttribute(triangles, 1) );
 
@@ -321,7 +353,7 @@
       meshMaterial = new THREE.MeshPhongMaterial( {
         //color : 0x2194CE,
         color: state.color,
-        //side: THREE.DoubleSide,
+        side: THREE.DoubleSide,
         //vertexColors: true,
         wireframe: false
       } );
@@ -345,14 +377,11 @@
 
       renderer = new THREE.WebGLRenderer( { antialias: true } );
       renderer.setSize( 500, 500 );
-      controls = new THREE.OrbitControls( camera, renderer.domElement );
+      controls = new THREE.OrbitControls( perspectiveCamera, renderer.domElement );
       document.getElementById('gl-container').appendChild( renderer.domElement );
 
-      camera.position.set(-250, -250, 330);
-      camera.rotation.set(0, 0, 0);
-
-      controls.target.set(-250, -250, -250);
-
+      
+      controls.target.set(250, 250, -250);
       controls.update();
 
       initGui();
@@ -368,15 +397,13 @@
       display: 'point',
       vertexColor: false,
       color: 0x32EEDB,
+      ar: false,
       center: false,
       pause: false
     };
 
     function initGui() {
 
-      dat.GUI.TEXT_CLOSED = '关闭控制器';
-      dat.GUI.TEXT_OPEN = '打开控制器';
-      
       var gui = new dat.GUI();
       
       // gui.add(state, 'maxFaces', 1, 10, 1).name('Max Faces').onChange(async function (v) {
@@ -421,13 +448,13 @@
 
       });
 
-      var baseColor = gui.addColor(state, 'color').name('基础颜色').onChange(function (v) {
+      var baseColor = gui.addColor(state, 'color').onChange(function (v) {
         if(!state.vertexColor){
           pointMaterial.color = meshMaterial.color = new THREE.Color(v) ;
         }
       });
 
-      gui.add(state, 'vertexColor').name('顶点着色').onChange(function (v) {
+      gui.add(state, 'vertexColor').onChange(function (v) {
 
           pointMaterial.vertexColors = v;
           meshMaterial.vertexColors = v;
@@ -441,23 +468,39 @@
           
       });
 
+      gui.add(state, 'ar').name('AR').onChange(function (v) {
 
-      gui.add(state, 'center').name('保持居中').onChange(function (v) {
         if(v){
-          camera.position.set(0, 0, 330);
-          camera.rotation.set(0, 0, 0);
-          controls.target.set(0, 0, 0);
+          centerController.setValue(false);
+          pauseController.setValue(false);
+          viewFolder.domElement.style.display = "none";
+          controls.enabled = false;
+        }else{
+          viewFolder.domElement.style.display = "block";
+          controls.enabled = true;
+        }
 
+      });
+
+
+      var viewFolder = gui.addFolder("View");
+      viewFolder.open();
+
+      var centerController = viewFolder.add(state, 'center').onChange(function (v) {
+        if(v){
+          perspectiveCamera.position.set(0, 0, 350);
+          perspectiveCamera.rotation.set(0, 0, 0);
+          controls.target.set(0, 0, 0);
           controls.update();
         }else{
-          camera.position.set(-250, -250, 330);
-          camera.rotation.set(0, 0, 0);
-          controls.target.set(-250, -250, -250);
+          perspectiveCamera.position.set(250, 250, 250);
+          perspectiveCamera.rotation.set(0, 0, 0);
+          controls.target.set(250, 250, -250);
           controls.update();
         }
       });
 
-      gui.add(state, 'pause').name('暂停').onChange(function (v) {
+      var pauseController = viewFolder.add(state, 'pause').onChange(function (v) {
 
       });
 

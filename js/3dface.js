@@ -185,7 +185,7 @@ class FaceMesh3D {
 
                 const scaledCoords = coordsReshaped.mul(normalizedBox).add(box.startPoint.concat(tf.tensor2d([0], [1, 1]), 1));
                 
-                const scaledCoordsFlatten = scaledCoords.mul([-1, -1, 1]).reshape([-1]);
+                const scaledCoordsFlatten = scaledCoords.reshape([-1]);
 
                 const keypointIndices = this.meshConfig.keypoint;
 
