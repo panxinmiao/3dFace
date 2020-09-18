@@ -380,7 +380,8 @@
       controls = new THREE.OrbitControls( perspectiveCamera, renderer.domElement );
       document.getElementById('gl-container').appendChild( renderer.domElement );
 
-      
+      controls.panSpeed = -1;
+      controls.rotateSpeed = -1;
       controls.target.set(250, 250, -250);
       controls.update();
 
