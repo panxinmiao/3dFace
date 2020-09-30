@@ -44,10 +44,12 @@ class FaceMesh3D {
 
         if (predictions != null && predictions.length > 0) {
             return Promise.all(predictions.map(async (prediction, i) => {
-                const { coords, scaledCoords, scaledCoordsFlatten, colorsFlatten, box, flag } = await prediction;
+                const { coords, scaledCoords, vertexColors, box, flag } = await prediction;
                 let tensorsToRead = [flag];
+                let box_startPoint = box.startPoint.squeeze();
+                let box_endPoint = box.endPoint.squeeze();
                 if (!returnTensors) {
-                    tensorsToRead = tensorsToRead.concat([box.startPoint, box.endPoint, coords, scaledCoords, scaledCoordsFlatten, colorsFlatten]);
+                    tensorsToRead = tensorsToRead.concat([box_startPoint, box_endPoint, coords, scaledCoords, vertexColors]);
                 }
                 const tensorValues = await Promise.all(tensorsToRead.map(async (d) => d.array()));
                 const flagValue = tensorValues[0];
@@ -60,30 +62,29 @@ class FaceMesh3D {
                     return {
                         faceInViewConfidence: flagValue,
                         box: {
-                            topLeft: box.startPoint.squeeze(),
-                            bottomRight: box.endPoint.squeeze()
+                            topLeft: box_startPoint,
+                            bottomRight: box_endPoint
                         },
                         coords: coords,
                         scaledCoords: scaledCoords,
-                        colorsFlatten: colorsFlatten,
-                        scaledCoordsFlatten: scaledCoordsFlatten
+                        vertexColors: vertexColors
                     }
                 }else{
-                    const [topLeft, bottomRight, coordsArr, coordsArrScaled, scaledCoordsArrFlatten, colorsArrFlatten] = tensorValues.slice(1);
+                    const [topLeft, bottomRight, coordsArr, coordsArrScaled, vertexColorsArr] = tensorValues.slice(1);
+                    box_startPoint.dispose();
+                    box_endPoint.dispose();
                     coords.dispose();
                     scaledCoords.dispose();
-                    scaledCoordsFlatten.dispose();
-                    colorsFlatten.dispose();
+                    vertexColors.dispose();
                     return {
                         faceInViewConfidence: flagValue,
                         box: {
-                            topLeft: topLeft[0],
-                            bottomRight: bottomRight[0]
+                            topLeft: topLeft,
+                            bottomRight: bottomRight
                         },
                         coords: coordsArr,
                         scaledCoords: coordsArrScaled,
-                        colorsFlatten: colorsArrFlatten,
-                        scaledCoordsFlatten: scaledCoordsArrFlatten
+                        vertexColors: vertexColorsArr
                     };
                 }
                 
@@ -185,7 +186,7 @@ class FaceMesh3D {
 
                 const scaledCoords = coordsReshaped.mul(normalizedBox).add(box.startPoint.concat(tf.tensor2d([0], [1, 1]), 1));
                 
-                const scaledCoordsFlatten = scaledCoords.reshape([-1]);
+                //const scaledCoordsFlatten = scaledCoords.reshape([-1]);
 
                 const keypointIndices = this.meshConfig.keypoint;
 
@@ -204,14 +205,16 @@ class FaceMesh3D {
 
                 indices = tf.zeros([indices.shape[0], 1]).concat(indices, 1).toInt();
 
-                const colorsFlatten = tf.gatherND(input.transpose([0, 2, 1, 3]), indices).reshape([-1]).div(255);
+                //const colorsFlatten = tf.gatherND(input.transpose([0, 2, 1, 3]), indices).reshape([-1]).div(255);
+
+                const vertexColors = tf.gatherND(input.transpose([0, 2, 1, 3]), indices).div(255);
 
                 const prediction = {
                     box: landmarksBox,
                     coords: vertex,
                     scaledCoords: scaledCoords,
-                    scaledCoordsFlatten: scaledCoordsFlatten,
-                    colorsFlatten: colorsFlatten,
+                    //scaledCoordsFlatten: scaledCoordsFlatten,
+                    vertexColors: vertexColors,
                     flag: confidence.squeeze()
                 };
 

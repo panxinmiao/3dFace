@@ -5,16 +5,16 @@
       vertical-align: top;
     }
     
-    /* center the canvas within its wrapper */
-    #gl-container canvas {
+    /* #gl-container canvas {
       transform: scale3d(-1, -1, 1);
-    }
+    } */
   </style>
   </head>
   <body>
     <div id="main">
       <!-- <img src="test_face.png" id="test_img"></img> -->
       <div class="container">
+        <p id="loading">Loading models, please wait...</p>
         <div id="video-container" class="canvas-wrapper">
           <canvas id="output"></canvas>
           <video id="video" playsinline style="
@@ -31,17 +31,17 @@
     </div>
   </body>
   <!-- <script src="js/dat.gui.min.js"></script> -->
-  <script src="js/tf.min.js"></script>
+  <script src="third_party/tf.min.js"></script>
+  <script src="third_party/stats.min.js"></script>
+  <script src="third_party/dat.gui.min.js"></script>
+  <script src="third_party/npy_parser.js"></script>
+  <script src="third_party/three.min.js"></script>
+  <script src="third_party/OrbitControls.js"></script>
+
   <script src="js/boxutil.js"></script>
   <script src="js/blazeface.js"></script>
   <script src="js/face_exist.js"></script>
   <script src="js/3dface.js"></script>
-  <script src="js/stats.min.js"></script>
-  <script src="js/dat.gui.min.js"></script>
-  <script src="js/npy_parser.js"></script>
-
-  <script src="js/three.min.js"></script>
-  <script src="js/OrbitControls.js"></script>
 
   <script>
 
@@ -112,7 +112,7 @@
 
     let perspectiveCamera, orthographicCamera, scene, renderer;
     let videoCamera, videoScene;
-    let faceGeometry, pointsMesh, faceMesh;
+    let faceGeometry, pointsMesh, faceMesh, faceGroup;
     let pointMaterial, meshMaterial;
     let positions, colors;
 
@@ -149,10 +149,32 @@
 
     async function renderPrediction() {
       stats.begin();
-
+      
       const screenShot = await webcam.capture();
-      const predictions = await faceModel.estimateFaces(screenShot, returnTensors = false, flipHorizontal = false);
+      //const predictions = await faceModel.estimateFaces(screenShot, returnTensors = false, flipHorizontal = false);
+
+      const predictionTensors = await faceModel.estimateFaces(screenShot, returnTensors = true, flipHorizontal = false);
+      
       screenShot.dispose();
+
+      tf.engine().startScope();
+      const predictions = await Promise.all(predictionTensors.map( async (p) => {
+        let scaledCoordsFlattenTensor = p.scaledCoords.mul([-1, -1, 1]).reshape([-1]); //
+        let colorsFlattenTensor = p.vertexColors.reshape([-1]);
+        let tensorsToRead = [p.box.topLeft, p.box.bottomRight, p.scaledCoords, scaledCoordsFlattenTensor, colorsFlattenTensor];
+
+        const tensorValues = await Promise.all(tensorsToRead.map(async (d) => d.array()));
+        //scaledCoordsFlattenTensor.dispose();
+        //colorsFlattenTensor.dispose();
+        const [topLeft, bottomRight, scaledCoords, scaledCoordsFlatten, colorsFlatten] = tensorValues;
+
+        let box = {topLeft, bottomRight};
+        return {box, scaledCoords, scaledCoordsFlatten, colorsFlatten};
+      }));
+      tf.engine().endScope();
+      tf.disposeVariables();
+
+      tf.dispose(predictionTensors);
 
       ctx.drawImage(video, 0, 0, videoWidth, videoHeight, 0, 0, canvas.width, canvas.height);
       
@@ -167,14 +189,7 @@
           const box = prediction.box;
           drawBox(box, ctx, '#FF0000');
 
-          //const landmarksBox = prediction.landmarksBox;
-          //drawBox(landmarksBox, ctx);
-
-         // [x,y,w,h] = [box.topLeft[0], box.topLeft[1], box.bottomRight[0]-box.topLeft[0], box.bottomRight[1]-box.topLeft[1]];
-          // ctx.strokeRect(x, y, w, h);
-
-          const coords = prediction.scaledCoords;
-  
+          const coords = prediction.scaledCoords;  
           for (let i = 0; i < coords.length; i+=50) {
             const x = coords[i][0];
             const y = coords[i][1];
@@ -193,7 +208,6 @@
 
           combinedColors = combinedColors.concat(colorsFlatten);
           
-
         });
 
         // faceGeometry.setAttribute('position', new THREE.Float32BufferAttribute( combined, 3 ) );
@@ -209,19 +223,15 @@
             colors.needsUpdate = true;
           }
 
-
         }else{
           positions = new THREE.Float32BufferAttribute( combined, 3 );
           positions.setUsage( THREE.DynamicDrawUsage );
           faceGeometry.setAttribute('position', positions );
           
-
           colors = new THREE.Float32BufferAttribute( combinedColors, 3 );
           colors.setUsage( THREE.DynamicDrawUsage );
           faceGeometry.setAttribute('color', colors );
-
           faceGeometry.computeVertexNormals();
-
         }
 
         detectedFaces = predictions.length;
@@ -288,11 +298,10 @@
 
 
       perspectiveCamera = new THREE.PerspectiveCamera( 70, videoWidth / videoHeight, 0.01, 1000 );
-      perspectiveCamera.position.set(250, 250, 250);
+      perspectiveCamera.position.set(-250, -250, 250);
       orthographicCamera = new THREE.OrthographicCamera(-250, 250, 250, -250, -1, 1000);
-      orthographicCamera.position.set(250, 250, 250);
-      //camera.rotation.set(0, 0, 0);
-      
+      orthographicCamera.position.set(-250, -250, 250);
+
       scene = new THREE.Scene();
       
 
@@ -300,7 +309,6 @@
       scene.add( ambientLight );
 
       var pointLight = new THREE.PointLight( 0xffffff, 1);
-      //pointLight.position.set( -100, -100, -150 );
       perspectiveCamera.add( pointLight );
       orthographicCamera.add( pointLight );
 
@@ -320,14 +328,12 @@
       plane.material.depthTest = false;
       plane.material.depthWrite = false;
 
-      videoCamera = new THREE.OrthographicCamera(-1, 1, -1, 1, -1, 1);
+      videoCamera = new THREE.OrthographicCamera(1, -1, 1, -1, -1, 1);
       videoScene = new THREE.Scene();
       videoScene.add(plane);
       videoScene.add(videoCamera);
 
       faceGeometry = new THREE.BufferGeometry();
-
-      //faceGeometry.setAttribute('position', new THREE.Float32BufferAttribute( [1,1,1], 3 ) );
 
       faceGeometry.setIndex( new THREE.Uint16BufferAttribute(triangles, 1) );
 
@@ -335,41 +341,31 @@
       //faceGeometry = faceGeometry.toNonIndexed();
 
       pointMaterial = new THREE.PointsMaterial( {
-        //color: 0x32EEDB,
         color: state.color,
         size: 1,
-        //blending: THREE.AdditiveBlending,
         transparent: true,
         vertexColors: false,
-        //sizeAttenuation: false
 			} );
 
       pointsMesh = new THREE.Points( faceGeometry, pointMaterial );
 
-      //pointsMesh.visible = false;
-
-      scene.add( pointsMesh );
-
       meshMaterial = new THREE.MeshPhongMaterial( {
-        //color : 0x2194CE,
         color: state.color,
         side: THREE.DoubleSide,
-        //vertexColors: true,
         wireframe: false
       } );
 
-      //meshMaterial = new THREE.MeshPhongMaterial( { color: 0x2194CE ,side : THREE.DoubleSide,} );
 
       faceMesh = new THREE.Mesh( faceGeometry, meshMaterial );
       faceMesh.visible = false;
-      //faceMesh.visible = state.triangulateMesh;
-      
-      scene.add( faceMesh );
 
-    
-      //var gridHelper = new THREE.GridHelper( 500, 500 );
-      //gridHelper.position.y = - 2;
-      //scene.add( gridHelper );
+      faceGroup = new THREE.Group();
+      //faceGroup.position.set(250, 250, 0);
+
+      faceGroup.add( pointsMesh );
+      faceGroup.add( faceMesh );
+
+      scene.add( faceGroup );
 
       var axes = new THREE.AxesHelper(500);
 
@@ -380,9 +376,7 @@
       controls = new THREE.OrbitControls( perspectiveCamera, renderer.domElement );
       document.getElementById('gl-container').appendChild( renderer.domElement );
 
-      controls.panSpeed = -1;
-      controls.rotateSpeed = -1;
-      controls.target.set(250, 250, -250);
+      controls.target.set(-250, -250, -250);
       controls.update();
 
       initGui();
@@ -393,8 +387,6 @@
 
     const state = {
       maxFaces: 1,
-      //triangulateMesh: false,
-      //pointsMesh: true,
       display: 'point',
       vertexColor: false,
       color: 0x32EEDB,
@@ -413,7 +405,7 @@
       //   faceModel.maxFaces = v;
       // });
 
-      gui.add(state, 'display', {point: 'point', wireframe: 'wireframe', flatShading: 'flatShading', solid: 'solid'}).name('显示').onChange(function (v) {
+      gui.add(state, 'display', {point: 'point', wireframe: 'wireframe', flatShading: 'flatShading', solid: 'solid'}).onChange(function (v) {
         
         switch(v){
           case 'point':
@@ -494,9 +486,9 @@
           controls.target.set(0, 0, 0);
           controls.update();
         }else{
-          perspectiveCamera.position.set(250, 250, 250);
+          perspectiveCamera.position.set(-250, -250, 250);
           perspectiveCamera.rotation.set(0, 0, 0);
-          controls.target.set(250, 250, -250);
+          controls.target.set(-250, -250, -250);
           controls.update();
         }
       });
@@ -507,6 +499,10 @@
 
     }
 
-    init();
+    init().then(()=>{
+      document.getElementById('loading').style.display='none';
+    });
+
+    
 
   </script>
